@@ -171,16 +171,115 @@ b SKIP_START_MATCH
 ################################################################################
 HANDLE_FINDING:
 
-# Handle cancel
-rlwinm.	r0, REG_INPUTS, 0, 0x10
-bnel FN_RESET_CONNECTIONS
+# Handle cancel (B button / Z button)
+	rlwinm.	r0, REG_INPUTS, 0, 0x10
+	bnel FN_RESET_CONNECTIONS
 
-b SKIP_START_MATCH
+################################################################################
+# L/R: cycle CPU char, X/Y: level, D-pad U/D: stage
+################################################################################
+# Initialize defaults if CPU level is still 0 (first time)
+	lbz r3, CSSDT_WARMUP_CPU_LEVEL(REG_CSSDT_ADDR)
+	cmpwi r3, 0
+	bne WARMUP_INIT_DONE
+	li r3, 2 # Fox
+	stb r3, CSSDT_WARMUP_CPU_CHAR(REG_CSSDT_ADDR)
+	li r3, 9 # Level 9
+	stb r3, CSSDT_WARMUP_CPU_LEVEL(REG_CSSDT_ADDR)
+	li r3, 2 # Yoshi's Story (index 2 in stage list: FoD,Pokemon,Yoshi,DL,BF,FD)
+	stb r3, CSSDT_WARMUP_STAGE_IDX(REG_CSSDT_ADDR)
+WARMUP_INIT_DONE:
+
+# R trigger: next CPU character
+	rlwinm.	r0, REG_INPUTS, 0, 0x0020
+	beq BTN_R_END
+	lbz r3, CSSDT_WARMUP_CPU_CHAR(REG_CSSDT_ADDR)
+	addi r3, r3, 1
+	cmpwi r3, 26
+	blt BTN_R_STORE
+	li r3, 0
+BTN_R_STORE:
+	stb r3, CSSDT_WARMUP_CPU_CHAR(REG_CSSDT_ADDR)
+BTN_R_END:
+
+# L trigger: previous CPU character
+	rlwinm.	r0, REG_INPUTS, 0, 0x0040
+	beq BTN_L_END
+	lbz r3, CSSDT_WARMUP_CPU_CHAR(REG_CSSDT_ADDR)
+	subi r3, r3, 1
+	cmpwi r3, 0
+	bge BTN_L_STORE
+	li r3, 25
+BTN_L_STORE:
+	stb r3, CSSDT_WARMUP_CPU_CHAR(REG_CSSDT_ADDR)
+BTN_L_END:
+
+# Y button: level up
+	rlwinm.	r0, REG_INPUTS, 0, 0x0800
+	beq BTN_Y_END
+	lbz r3, CSSDT_WARMUP_CPU_LEVEL(REG_CSSDT_ADDR)
+	addi r3, r3, 1
+	cmpwi r3, 10
+	blt BTN_Y_STORE
+	li r3, 1
+BTN_Y_STORE:
+	stb r3, CSSDT_WARMUP_CPU_LEVEL(REG_CSSDT_ADDR)
+BTN_Y_END:
+
+# X button: level down
+	rlwinm.	r0, REG_INPUTS, 0, 0x0400
+	beq BTN_X_END
+	lbz r3, CSSDT_WARMUP_CPU_LEVEL(REG_CSSDT_ADDR)
+	subi r3, r3, 1
+	cmpwi r3, 1
+	bge BTN_X_STORE
+	li r3, 9
+BTN_X_STORE:
+	stb r3, CSSDT_WARMUP_CPU_LEVEL(REG_CSSDT_ADDR)
+BTN_X_END:
+
+# A button: cycle stage forward
+	rlwinm.	r0, REG_INPUTS, 0, 0x0100
+	beq BTN_A_STAGE_END
+	lbz r3, CSSDT_WARMUP_STAGE_IDX(REG_CSSDT_ADDR)
+	addi r3, r3, 1
+	cmpwi r3, 6
+	blt BTN_A_STAGE_STORE
+	li r3, 0
+BTN_A_STAGE_STORE:
+	stb r3, CSSDT_WARMUP_STAGE_IDX(REG_CSSDT_ADDR)
+BTN_A_STAGE_END:
+
+# Check if START pressed to activate warmup CPU match
+	rlwinm.	r0, REG_INPUTS, 0, 19, 19
+	beq SKIP_START_MATCH # START not pressed, continue searching
+
+# START pressed during search - activate warmup mode via EXI
+	bl FN_ACTIVATE_WARMUP
+
+	b SKIP_START_MATCH
 
 ################################################################################
 # Case 3: Handle case where we have an opponent
 ################################################################################
 HANDLE_CONNECTED:
+
+# Check if this is a warmup match - auto-lock-in immediately
+lbz r3, MSRB_IS_WARMUP(REG_MSRB_ADDR)
+cmpwi r3, 1
+bne HANDLE_CONNECTED_NORMAL  # Not warmup, proceed normally
+
+# Warmup mode - check if already locked in
+lbz r3, MSRB_IS_LOCAL_PLAYER_READY(REG_MSRB_ADDR)
+cmpwi r3, 1
+beq CHECK_SHOULD_START_MATCH  # Already locked in, check if match should start
+
+# Auto lock-in for warmup with random stage
+li r3, SB_RAND
+bl FN_TX_LOCK_IN
+b CHECK_SHOULD_START_MATCH
+
+HANDLE_CONNECTED_NORMAL:
 
 # Handle disconnect when input is hold for X seconds
 lbz r3, -0x49B0(r13) # player index in control of CSS
@@ -560,6 +659,44 @@ branchl r12, HSD_Free
 restore
 blr
 
+################################################################################
+# Function: Activate warmup CPU match during search
+################################################################################
+FN_ACTIVATE_WARMUP:
+backup
+
+# Prepare buffer for EXI transfer (4 bytes: cmd + char + level + stage_idx)
+li r3, 4
+branchl r12, HSD_MemAlloc
+mr REG_TXB_ADDR, r3
+
+# Write tx data
+li r3, CONST_SlippiCmdActivateWarmup
+stb r3, 0(REG_TXB_ADDR)
+
+# Write CPU character ID
+lbz r3, CSSDT_WARMUP_CPU_CHAR(REG_CSSDT_ADDR)
+stb r3, 1(REG_TXB_ADDR)
+
+# Write CPU level
+lbz r3, CSSDT_WARMUP_CPU_LEVEL(REG_CSSDT_ADDR)
+stb r3, 2(REG_TXB_ADDR)
+
+# Write stage index
+lbz r3, CSSDT_WARMUP_STAGE_IDX(REG_CSSDT_ADDR)
+stb r3, 3(REG_TXB_ADDR)
+
+# Send activate warmup command
+mr r3, REG_TXB_ADDR
+li r4, 4
+li r5, CONST_ExiWrite
+branchl r12, FN_EXITransferBuffer
+
+mr r3, REG_TXB_ADDR
+branchl r12, HSD_Free
+
+restore
+blr
 
 ################################################################################
 # Skip starting match

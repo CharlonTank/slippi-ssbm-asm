@@ -285,6 +285,11 @@ stb r3, ODB_IS_FRAME_ADVANCE(REG_ODB_ADDRESS)
 
 RESP_RES_CONTINUE:
 
+# During warmup, skip all rollback/delay/prediction logic - just increment frame
+lbz r3, ODB_IS_WARMUP(REG_ODB_ADDRESS)
+cmpwi r3, 1
+beq INCREMENT_AND_EXIT
+
 ################################################################################
 # Section 6: Overwrite this frame's pad data with data from x frames ago
 ################################################################################
@@ -873,6 +878,11 @@ add r5, r5, r6
 mulli r3, REG_REMOTE_PLAYER_IDX, PAD_REPORT_SIZE
 addi r3, r3, P1_PAD_OFFSET # offset from sp where opponent pad report is
 
+# During warmup, skip overwriting opponent inputs - let CPU AI control P2
+lbz r6, ODB_IS_WARMUP(REG_ODB_ADDRESS)
+cmpwi r6, 1
+beq SKIP_OPP_INPUT_COPY
+
 # copy opponent pad data to stack
 add r3, REG_PARENT_STACK_FRAME, r3 # destination
 add r4, REG_RXB_ADDRESS, r5 # source
@@ -886,6 +896,7 @@ SKIP_OPP_LOG:
 .endif
 
 branchl r12, memcpy
+SKIP_OPP_INPUT_COPY:
 
 addi REG_COUNT, REG_COUNT, 1
 addi REG_REMOTE_PLAYER_IDX, REG_REMOTE_PLAYER_IDX, 1

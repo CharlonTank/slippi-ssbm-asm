@@ -18,6 +18,12 @@ lwz r3, 0x0(r3) # 0x80479d64 - Believed to be some loading state
 cmpwi r3, 0 # Loading state should be zero when game starts
 bne ORIGINAL
 
+# Skip rollback during warmup
+lwz r3, OFST_R13_ODB_ADDR(r13)
+lbz r3, ODB_IS_WARMUP(r3)
+cmpwi r3, 1
+beq ORIGINAL
+
 ################################################################################
 # Break out of loop on a rollback
 ################################################################################

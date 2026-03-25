@@ -55,7 +55,16 @@ blrl
 .float 0.38 # text size
 .long 0xFFB800FF # text color
 .string "Desync Risk" # text
-.set DOFST_DISCONNECT_TEXT_ENTRY_SIZE, 16 + 12
+.set DOFST_DESYNC_RISK_TEXT_ENTRY_SIZE, 16 + 12
+
+# Text entry for warmup opponent found text
+.set DOFST_WARMUP_FOUND_TEXT_ENTRY, DOFST_DESYNC_RISK_TEXT_ENTRY + DOFST_DESYNC_RISK_TEXT_ENTRY_SIZE
+.float 9 # x-pos
+.float -162 # y-pos
+.float 0.7 # text size
+.long 0x00FF00FF # text color (green)
+.string "Opponent found!" # text
+.set DOFST_WARMUP_FOUND_TEXT_ENTRY_SIZE, 16 + 16
 
 .align 2
 
@@ -222,6 +231,20 @@ blr
 # End game
 ################################################################################
 FN_END_GAME:
+# Only force-end the game when in ranked mode or during a warmup match. In a
+# normal unranked match we leave the game running (warmup-feature gating).
+lbz r3, OFST_R13_ONLINE_MODE(r13)
+cmpwi r3, ONLINE_MODE_RANKED
+beq FORCE_GAME_END
+
+# Not ranked, check if this is a warmup match
+loadwz r3, CSSDT_BUF_ADDR # Load CSSDT buffer address
+lwz r3, CSSDT_MSRB_ADDR(r3) # Load MSRB address from CSSDT
+lbz r3, MSRB_IS_WARMUP(r3) # Load warmup flag
+cmpwi r3, 1
+bne FN_END_GAME_IF_RANKED_EXIT # Not warmup either, skip
+
+FORCE_GAME_END:
 # ASM Notes. Match struct at 0x8046b6a0 has info about the game. The early values seem to be control
 # values. Here are notes on offsets:
 # 0x0 (u8): Control byte. 0 during game, 1 during GAME!, 3 to transition to next scene
@@ -241,6 +264,7 @@ stb r4, 0x8(r3) # Write that the game is exiting as an LRAS
 li r4, 90 # Default value for this is 110 which felt a bit long so I shortened it a bit
 stb r4, 0x24D5(r3) # Overwrite the GAME! think max time to make it shorter
 
+FN_END_GAME_IF_RANKED_EXIT:
 blr
 
 CODE_START:
@@ -297,10 +321,26 @@ bne DISPLAY_DISCONNECT_END
 li r3, 3
 branchl r12, SFX_Menu_CommonSound
 
+# Check if this is a warmup match to show different text
+loadwz r3, CSSDT_BUF_ADDR # Load CSSDT buffer address
+lwz r3, CSSDT_MSRB_ADDR(r3) # Load MSRB address from CSSDT
+lbz r3, MSRB_IS_WARMUP(r3) # Load warmup flag
+cmpwi r3, 1
+bne DISPLAY_DISCONNECT_NORMAL
+
+# Warmup match: show "Opponent found!" text
+lwz r3, ODB_HUD_TEXT_STRUCT(REG_ODB_ADDRESS)
+li r4, DOFST_WARMUP_FOUND_TEXT_ENTRY
+bl FN_CREATE_HUD_SUBTEXT
+b DISPLAY_DISCONNECT_TEXT_DONE
+
+DISPLAY_DISCONNECT_NORMAL:
 # Create subtext
 lwz r3, ODB_HUD_TEXT_STRUCT(REG_ODB_ADDRESS)
 li r4, DOFST_DISCONNECT_TEXT_ENTRY
 bl FN_CREATE_HUD_SUBTEXT
+
+DISPLAY_DISCONNECT_TEXT_DONE:
 
 # Indicate we have displayed disconnect message. Dont worry, we can't rollback
 # if disconnected so we dont have to worry about things getting reset
@@ -311,6 +351,11 @@ stb r3, ODB_IS_DISCONNECT_STATE_DISPLAYED(REG_ODB_ADDRESS)
 bl FN_END_GAME
 
 DISPLAY_DISCONNECT_END:
+
+# During warmup, skip all rollback/savestate logic
+lbz r3, ODB_IS_WARMUP(REG_ODB_ADDRESS)
+cmpwi r3, 1
+beq WARMUP_SKIP_ROLLBACK
 
 ################################################################################
 # Check if we should load state
@@ -740,6 +785,7 @@ CHECK_GAME_END_END:
 ################################################################################
 # Restore and exit
 ################################################################################
+WARMUP_SKIP_ROLLBACK:
 RESTORE_AND_EXIT:
 mr r3, REG_INTERRUPT_IDX
 branchl r12, OSRestoreInterrupts

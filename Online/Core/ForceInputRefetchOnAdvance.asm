@@ -17,6 +17,12 @@ lwz r3, 0x0(r3) # 0x80479d64 - Believed to be some loading state
 cmpwi r3, 0 # Loading state should be zero when game starts
 bne EXIT
 
+# Skip during warmup
+lwz r3, OFST_R13_ODB_ADDR(r13)
+lbz r3, ODB_IS_WARMUP(r3)
+cmpwi r3, 1
+beq EXIT
+
 # Check if we got the signal to advance a frame
 lwz r5, OFST_R13_ODB_ADDR(r13) # data buffer address
 lbz r3, ODB_IS_FRAME_ADVANCE(r5)

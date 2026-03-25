@@ -156,6 +156,58 @@ blrl
 .set TPO_STRING_SPINNER_DONE, TPO_STRING_SPINNER_2 + 3
 .short 0x817C # －
 .byte 0x00
+.set TPO_STRING_WARMUP, TPO_STRING_SPINNER_DONE + 3
+.string "Warming up..."
+.set TPO_STRING_CPU_FMT, TPO_STRING_WARMUP + 14
+.string "%s Lv.%d | %s"
+
+.align 2
+
+################################################################################
+# Character name table - 10 bytes per entry, null-padded
+################################################################################
+CHAR_NAME_TABLE:
+blrl
+.string "C.Falcon\0" # 0
+.string "DK\0\0\0\0\0\0\0" # 1
+.string "Fox\0\0\0\0\0\0" # 2
+.string "G&W\0\0\0\0\0\0" # 3
+.string "Kirby\0\0\0\0" # 4
+.string "Bowser\0\0\0" # 5
+.string "Link\0\0\0\0\0" # 6
+.string "Luigi\0\0\0\0" # 7
+.string "Mario\0\0\0\0" # 8
+.string "Marth\0\0\0\0" # 9
+.string "Mewtwo\0\0\0" # 10
+.string "Ness\0\0\0\0\0" # 11
+.string "Peach\0\0\0\0" # 12
+.string "Pikachu\0\0" # 13
+.string "ICs\0\0\0\0\0\0" # 14
+.string "Puff\0\0\0\0\0" # 15
+.string "Samus\0\0\0\0" # 16
+.string "Yoshi\0\0\0\0" # 17
+.string "Zelda\0\0\0\0" # 18
+.string "Sheik\0\0\0\0" # 19
+.string "Falco\0\0\0\0" # 20
+.string "Y.Link\0\0\0" # 21
+.string "Dr.Mario\0" # 22
+.string "Roy\0\0\0\0\0\0" # 23
+.string "Pichu\0\0\0\0" # 24
+.string "Ganon\0\0\0\0" # 25
+.set CHAR_NAME_ENTRY_LEN, 10
+
+################################################################################
+# Stage name table - 10 bytes per entry, null-padded
+################################################################################
+STAGE_NAME_TABLE:
+blrl
+.string "FoD\0\0\0\0\0\0" # 0 (0x2)
+.string "Pokemon\0\0" # 1 (0x3)
+.string "Yoshi's\0\0" # 2 (0x8)
+.string "DreamLand\0" # 3 (0x1C) - actually 10 bytes with null
+.string "BF\0\0\0\0\0\0\0" # 4 (0x1F)
+.string "FD\0\0\0\0\0\0\0" # 5 (0x20)
+.set STAGE_NAME_ENTRY_LEN, 10
 
 .align 2
 
@@ -571,7 +623,14 @@ addi r5, REG_TEXT_PROPERTIES, TPO_EMPTY_STRING
 b UPDATE_PLAYING_LABEL
 
 UPDATE_PLAYING_LABEL_CONNECTED:
+# During warmup, hide the playing label
+lbz r3, MSRB_IS_WARMUP(REG_MSRB_ADDR)
+cmpwi r3, 1
+beq UPDATE_PLAYING_LABEL_CLEAR
 addi r5, REG_TEXT_PROPERTIES, TPO_STRING_PLAYING_LABEL
+b UPDATE_PLAYING_LABEL
+UPDATE_PLAYING_LABEL_CLEAR:
+addi r5, REG_TEXT_PROPERTIES, TPO_EMPTY_STRING
 
 UPDATE_PLAYING_LABEL:
 li r4, STIDX_PLAYING_LABEL
@@ -589,7 +648,14 @@ addi r5, REG_TEXT_PROPERTIES, TPO_EMPTY_STRING
 b UPDATE_PLAYING_VALUE
 
 UPDATE_PLAYING_VALUE_CONNECTED:
+# During warmup, hide the opponent name
+lbz r3, MSRB_IS_WARMUP(REG_MSRB_ADDR)
+cmpwi r3, 1
+beq UPDATE_PLAYING_VALUE_CLEAR
 addi r5, REG_MSRB_ADDR, MSRB_OPP_NAME
+b UPDATE_PLAYING_VALUE
+UPDATE_PLAYING_VALUE_CLEAR:
+addi r5, REG_TEXT_PROPERTIES, TPO_EMPTY_STRING
 
 UPDATE_PLAYING_VALUE:
 li r4, STIDX_PLAYING_OPP
@@ -602,16 +668,68 @@ lbz r3, MSRB_CONNECTION_STATE(REG_MSRB_ADDR)
 cmpwi r3, MM_STATE_CONNECTION_SUCCESS
 beq UPDATE_PRESS_D_CONNECTED
 
-# clear on all other cases
+# Check if we are in a searching state (INITIALIZING, MATCHMAKING, or OPPONENT_CONNECTING)
+cmpwi r3, MM_STATE_IDLE
+ble UPDATE_PRESS_D_CLEAR_ALL
+cmpwi r3, MM_STATE_OPPONENT_CONNECTING
+bgt UPDATE_PRESS_D_CLEAR_ALL
+
+# We are searching - show CPU info: "<char> Lv.<level> | <stage>"
+# Look up character name from table
+bl CHAR_NAME_TABLE
+mflr REG_VARIOUS_1
+lbz r3, CSSDT_WARMUP_CPU_CHAR(REG_CSSDT_ADDR)
+mulli r3, r3, CHAR_NAME_ENTRY_LEN
+add r14, REG_VARIOUS_1, r3 # r14 = pointer to char name string
+
+lbz r15, CSSDT_WARMUP_CPU_LEVEL(REG_CSSDT_ADDR)
+# If level is 0, display as 9 (default before init)
+cmpwi r15, 0
+bne PRESS_D_LEVEL_OK
+li r15, 9
+PRESS_D_LEVEL_OK:
+
+# Look up stage name from table
+bl STAGE_NAME_TABLE
+mflr REG_VARIOUS_1
+lbz r3, CSSDT_WARMUP_STAGE_IDX(REG_CSSDT_ADDR)
+mulli r3, r3, STAGE_NAME_ENTRY_LEN
+add r16, REG_VARIOUS_1, r3 # r16 = pointer to stage name string
+
+# sprintf(stack_buf, "%s Lv.%d | %s", char_name, level, stage_name)
+addi r3, sp, BKP_FREE_SPACE_OFFSET # destination buffer on stack
+addi r4, REG_TEXT_PROPERTIES, TPO_STRING_CPU_FMT # format string
+mr r5, r14 # char name pointer
+mr r6, r15 # level integer
+mr r7, r16 # stage name pointer
+branchl r12, sprintf
+
+# Update press D subtext with the formatted CPU string
+li r4, STIDX_PRESS_D
+addi r5, sp, BKP_FREE_SPACE_OFFSET
+bl FN_UPDATE_TEXT
+b UPDATE_PRESS_D_DONE
+
+UPDATE_PRESS_D_CLEAR_ALL:
+# clear on all other non-connected cases
 addi r5, REG_TEXT_PROPERTIES, TPO_EMPTY_STRING
 b UPDATE_PRESS_D_TEXT
 
 UPDATE_PRESS_D_CONNECTED:
+# During warmup, hide D-Pad chat text
+lbz r3, MSRB_IS_WARMUP(REG_MSRB_ADDR)
+cmpwi r3, 1
+beq UPDATE_PRESS_D_CLEAR
 addi r5, REG_TEXT_PROPERTIES, TPO_STRING_USER_D_PAD_TO_CHAT
+b UPDATE_PRESS_D_TEXT
+UPDATE_PRESS_D_CLEAR:
+addi r5, REG_TEXT_PROPERTIES, TPO_EMPTY_STRING
 
 UPDATE_PRESS_D_TEXT:
 li r4, STIDX_PRESS_D
 bl FN_UPDATE_TEXT
+
+UPDATE_PRESS_D_DONE:
 
 ################################################################################
 # Manage press Z text
@@ -639,8 +757,16 @@ addi r6, REG_TEXT_PROPERTIES, TPO_STRING_CLEAR_ERROR
 b UPDATE_PRESS_Z_TEXT
 
 UPDATE_PRESS_Z_CONNECTED:
+# During warmup, show "cancel" instead of "disconnect"
+lbz r3, MSRB_IS_WARMUP(REG_MSRB_ADDR)
+cmpwi r3, 1
+beq UPDATE_PRESS_Z_WARMUP
 addi r5, REG_TEXT_PROPERTIES, TPO_STRING_HOLD_Z_TO
 addi r6, REG_TEXT_PROPERTIES, TPO_STRING_DISCONNECT
+b UPDATE_PRESS_Z_TEXT
+UPDATE_PRESS_Z_WARMUP:
+addi r5, REG_TEXT_PROPERTIES, TPO_STRING_PRESS_Z_TO
+addi r6, REG_TEXT_PROPERTIES, TPO_STRING_CANCEL
 
 UPDATE_PRESS_Z_TEXT:
 li r4, STIDX_PRESS_Z
@@ -892,8 +1018,16 @@ addi r6, REG_TEXT_PROPERTIES, TPO_STRING_OPP_CODE
 b UPDATE_WAITING
 
 UPDATE_WAITING_WITH_OPPONENT:
+# During warmup, show "Warming up..." instead of "Waiting on opponent"
+lbz r3, MSRB_IS_WARMUP(REG_MSRB_ADDR)
+cmpwi r3, 1
+beq UPDATE_WAITING_WARMUP
 addi r5, REG_TEXT_PROPERTIES, TPO_STRING_WAITING_ON
 addi r6, REG_TEXT_PROPERTIES, TPO_STRING_OPPONENT
+b UPDATE_WAITING
+
+UPDATE_WAITING_WARMUP:
+addi r5, REG_TEXT_PROPERTIES, TPO_STRING_WARMUP
 
 UPDATE_WAITING:
 bl FN_UPDATE_TEXT

@@ -117,6 +117,10 @@ mr REG_MSRB_ADDR, r3
 # results screen. Currently only party mode uses results screen
 fetchOnlineStaticDataPtr r12
 
+# Store warmup flag in ODB for use during gameplay
+lbz r3, MSRB_IS_WARMUP(REG_MSRB_ADDR)
+stb r3, ODB_IS_WARMUP(REG_ODB_ADDRESS)
+
 # Prepare player indices
 lbz r3, -0x5108(r13) # Grab the 1p port in use
 stb r3, ODB_INPUT_SOURCE_INDEX(REG_ODB_ADDRESS)
